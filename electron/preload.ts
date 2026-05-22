@@ -2,15 +2,18 @@ import { ipcRenderer, contextBridge } from 'electron'
 
 contextBridge.exposeInMainWorld('virtualPort', {
   start(
-    config: { leftPath: string; rightPath: string; mode: string; extraOptions: string },
+    config: { id: string; leftPath: string; rightPath: string; mode: string; extraOptions: string },
     auth: { useSudo: boolean; password?: string },
   ) {
     return ipcRenderer.invoke('virtual-port:start', { config, auth })
   },
-  stop(auth: { useSudo: boolean; password?: string }) {
-    return ipcRenderer.invoke('virtual-port:stop', auth)
+  stop(id: string, auth: { useSudo: boolean; password?: string }) {
+    return ipcRenderer.invoke('virtual-port:stop', { id, auth })
   },
-  status() {
-    return ipcRenderer.invoke('virtual-port:status')
+  status(id: string) {
+    return ipcRenderer.invoke('virtual-port:status', id)
+  },
+  readLog(id: string) {
+    return ipcRenderer.invoke('virtual-port:read-log', id)
   },
 })

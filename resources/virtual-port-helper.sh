@@ -2,13 +2,20 @@
 set -euo pipefail
 
 CMD="${1:-}"
-LEFT_PATH="${2:-}"
-RIGHT_PATH="${3:-}"
-MODE="${4:-}"
-EXTRA_OPTS="${5:-}"
+ID="${2:-}"
+LEFT_PATH="${3:-}"
+RIGHT_PATH="${4:-}"
+MODE="${5:-}"
+EXTRA_OPTS="${6:-}"
 
-PID_FILE="/run/virtual-port-linux.pid"
-LOG_FILE="/run/virtual-port-linux.log"
+LOG_FILE="/run/virtual-port-linux-${ID}.log"
+
+if [[ -z "$ID" ]]; then
+  echo "missing pair id"
+  exit 10
+fi
+
+PID_FILE="/run/virtual-port-linux-${ID}.pid"
 
 is_running() {
   if [[ -f "$PID_FILE" ]]; then
@@ -74,7 +81,7 @@ case "$CMD" in
     exit 0
     ;;
   *)
-    echo "usage: $0 {start|stop|status}"
+    echo "usage: $0 {start|stop|status} <id> [args]"
     exit 1
     ;;
 esac

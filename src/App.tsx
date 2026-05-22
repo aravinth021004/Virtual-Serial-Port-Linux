@@ -1,108 +1,135 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import './App.css'
 
-type FormState = {
-  leftPath: string
-  rightPath: string
-  mode: string
-  extraOptions: string
-}
-
-const DEFAULT_FORM: FormState = {
-  leftPath: '/dev/ttyV0',
-  rightPath: '/dev/ttyV1',
-  mode: '0666',
-  extraOptions: '',
+function generateNextPair(existingPairs: VirtualPortConfig[]): VirtualPortConfig {
+  let maxN = -1
+  existingPairs.forEach((p) => {
+    const lm = p.leftPath.match(/\/dev\/ttyV(\d+)/)
+    const rm = p.rightPath.match(/\/dev\/ttyV(\d+)/)
+    if (lm) maxN = Math.max(maxN, parseInt(lm[1], 10))
+    if (rm) maxN = Math.max(maxN, parseInt(rm[1], 10))
+  })
+  const base = maxN >= 0 ? maxN + 1 : 0
+  return {
+    id: `pair-${Date.now()}`,
+    leftPath: `/dev/ttyV${base}`,
+    rightPath: `/dev/ttyV${base + 1}`,
+    mode: '0666',
+    extraOptions: '',
+  }
 }
 
 function App() {
-  const [form, setForm] = useState<FormState>(DEFAULT_FORM)
-  const [status, setStatus] = useState<VirtualPortStatus | null>(null)
+  const [pairs, setPairs] = useState<VirtualPortConfig[]>([])
+  const [statuses, setStatuses] = useState<Record<string, VirtualPortStatus>>({})
+  const [logs, setLogs] = useState<Record<string, string>>({})
   const [isBusy, setIsBusy] = useState(false)
   const [useSudo, setUseSudo] = useState(true)
   const [password, setPassword] = useState('')
-  const [authAction, setAuthAction] = useState<'start' | 'stop' | null>(null)
+  const [authAction, setAuthAction] = useState<{ action: 'start' | 'stop'; id: string } | null>(null)
 
   useEffect(() => {
-    const saved = localStorage.getItem('virtual-port-config')
+    const saved = localStorage.getItem('virtual-port-pairs')
     if (saved) {
       try {
-        setForm({ ...DEFAULT_FORM, ...JSON.parse(saved) })
+        const loaded = JSON.parse(saved)
+        if (loaded && loaded.length > 0) {
+          setPairs(loaded)
+        } else {
+          setPairs([generateNextPair([])])
+        }
       } catch {
-        setForm(DEFAULT_FORM)
+        setPairs([generateNextPair([])])
       }
+    } else {
+      setPairs([generateNextPair([])])
     }
   }, [])
 
   useEffect(() => {
-    localStorage.setItem('virtual-port-config', JSON.stringify(form))
-  }, [form])
+    if (pairs.length > 0) {
+      localStorage.setItem('virtual-port-pairs', JSON.stringify(pairs))
+    }
+  }, [pairs])
 
   useEffect(() => {
-    void refreshStatus()
-  }, [])
+    void refreshStatusAll()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pairs.length])
 
-  const statusLabel = useMemo(() => {
-    if (!status) return 'Unknown'
-    if (status.state === 'running') return 'Running'
-    if (status.state === 'stopped') return 'Stopped'
-    return 'Error'
-  }, [status])
-
-  const authHint = useMemo(() => {
-    const text = `${status?.message ?? ''}\n${status?.details ?? ''}`
-    if (
-      text.includes('No session for cookie') ||
-      text.includes('pam_authenticate failed') ||
-      text.includes('Not authorized')
-    ) {
-      return 'Polkit agent not available. In WSL, start a user dbus session and run a polkit agent before using Start.'
-    }
-    return ''
-  }, [status])
-
-  async function refreshStatus() {
+  async function refreshStatusAll() {
     setIsBusy(true)
     try {
-      const nextStatus = await window.virtualPort.status()
-      setStatus(nextStatus)
+      const newStatuses: Record<string, VirtualPortStatus> = {}
+      const newLogs: Record<string, string> = {}
+      for (const p of pairs) {
+        newStatuses[p.id] = await window.virtualPort.status(p.id)
+        newLogs[p.id] = await window.virtualPort.readLog(p.id)
+      }
+      setStatuses(newStatuses)
+      setLogs(newLogs)
     } finally {
       setIsBusy(false)
     }
   }
 
-  async function runAction(action: 'start' | 'stop', authPassword: string) {
+  async function runAction(action: 'start' | 'stop', authPassword: string, id: string) {
     setIsBusy(true)
     try {
       const auth = { useSudo, password: authPassword }
-      const nextStatus =
-        action === 'start'
-          ? await window.virtualPort.start(form, auth)
-          : await window.virtualPort.stop(auth)
-      setStatus(nextStatus)
+      let nextStatus: VirtualPortStatus
+      if (action === 'start') {
+        const config = pairs.find((p) => p.id === id)
+        if (!config) return
+        nextStatus = await window.virtualPort.start(config, auth)
+      } else {
+        nextStatus = await window.virtualPort.stop(id, auth)
+      }
+      setStatuses((prev) => ({ ...prev, [id]: nextStatus }))
+      const newLog = await window.virtualPort.readLog(id)
+      setLogs((prev) => ({ ...prev, [id]: newLog }))
     } finally {
       setPassword('')
       setIsBusy(false)
     }
   }
 
-  function requestAuth(action: 'start' | 'stop') {
+  function requestAuth(action: 'start' | 'stop', id: string) {
     if (useSudo) {
-      setAuthAction(action)
+      setAuthAction({ action, id })
       return
     }
-    void runAction(action, '')
+    void runAction(action, '', id)
   }
 
   function handleAuthConfirm() {
     if (!authAction) return
-    void runAction(authAction, password)
+    void runAction(authAction.action, password, authAction.id)
     setAuthAction(null)
   }
 
   function handleAuthCancel() {
     setAuthAction(null)
     setPassword('')
+  }
+
+  function handleAddPair() {
+    setPairs([...pairs, generateNextPair(pairs)])
+  }
+
+  function updatePair(id: string, updates: Partial<VirtualPortConfig>) {
+    setPairs(pairs.map((p) => (p.id === id ? { ...p, ...updates } : p)))
+  }
+
+  function handleRemovePair(id: string) {
+    void window.virtualPort.stop(id, { useSudo, password: '' }) // Attempt background stop if possible, but sudo might prevent it if not ran as root
+    setPairs(pairs.filter((p) => p.id !== id))
+    const newStatuses = { ...statuses }
+    delete newStatuses[id]
+    setStatuses(newStatuses)
+    const newLogs = { ...logs }
+    delete newLogs[id]
+    setLogs(newLogs)
   }
 
   return (
@@ -112,112 +139,137 @@ function App() {
           <p className="app__eyebrow">Virtual Serial Ports</p>
           <h1 className="app__title">Virtual Port Studio</h1>
           <p className="app__subtitle">
-            Create, manage, and monitor a paired virtual serial port using socat.
+            Create, manage, and monitor paired virtual serial ports using socat.
           </p>
         </div>
-        <div className={`status-pill status-pill--${status?.state ?? 'unknown'}`}>
-          <span className="status-dot" />
-          <span>{statusLabel}</span>
-          {status?.pid ? <span className="status-meta">PID {status.pid}</span> : null}
+        <div className="header-actions">
+          <label className="field toggle-row" style={{ marginTop: 0 }}>
+            <span>Use sudo</span>
+            <input
+              type="checkbox"
+              checked={useSudo}
+              onChange={(event) => setUseSudo(event.target.checked)}
+            />
+          </label>
         </div>
       </header>
 
-      <main className="app__grid">
-        <section className="card">
-          <h2>Configuration</h2>
-          <div className="form-grid">
-            <label className="field">
-              <span>Left Port</span>
-              <input
-                value={form.leftPath}
-                onChange={(event) => setForm({ ...form, leftPath: event.target.value })}
-                placeholder="/dev/ttyV0"
-              />
-            </label>
-            <label className="field">
-              <span>Right Port</span>
-              <input
-                value={form.rightPath}
-                onChange={(event) => setForm({ ...form, rightPath: event.target.value })}
-                placeholder="/dev/ttyV1"
-              />
-            </label>
-            <label className="field">
-              <span>Mode (octal)</span>
-              <input
-                value={form.mode}
-                onChange={(event) => setForm({ ...form, mode: event.target.value })}
-                placeholder="0666"
-              />
-            </label>
-            <label className="field">
-              <span>Extra socat options</span>
-              <input
-                value={form.extraOptions}
-                onChange={(event) => setForm({ ...form, extraOptions: event.target.value })}
-                placeholder="waitslave,unlink-close"
-              />
-            </label>
-            <label className="field">
-              <span>Use sudo (in-app password)</span>
-              <div className="toggle-row">
-                <input
-                  type="checkbox"
-                  checked={useSudo}
-                  onChange={(event) => setUseSudo(event.target.checked)}
-                />
-                <span className="toggle-label">Required in WSL AppImage</span>
+      <main className="app__grid" style={{ gridTemplateColumns: '1fr' }}>
+        {pairs.map((p) => {
+          const st = statuses[p.id]
+          const isRunning = st?.state === 'running'
+          const stateLabel = !st ? 'Unknown' : st.state === 'running' ? 'Running' : st.state === 'error' ? 'Error' : 'Stopped'
+
+          return (
+            <section className="card card--pair" key={p.id} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+                  <div className={`status-pill status-pill--${st?.state ?? 'unknown'}`}>
+                    <span className="status-dot" />
+                    <span>{stateLabel}</span>
+                    {st?.pid ? <span className="status-meta">PID {st.pid}</span> : null}
+                  </div>
+                  <h3 style={{ margin: 0 }}>{p.id}</h3>
+                </div>
+                <div className="actions" style={{ marginTop: 0 }}>
+                  <button className="btn btn--primary" onClick={() => requestAuth('start', p.id)} disabled={isBusy || isRunning}>
+                    Start
+                  </button>
+                  <button className="btn btn--ghost" onClick={() => requestAuth('stop', p.id)} disabled={isBusy || !isRunning}>
+                    Stop
+                  </button>
+                  <button className="btn btn--ghost" onClick={() => handleRemovePair(p.id)} disabled={isBusy || isRunning}>
+                    Delete
+                  </button>
+                </div>
               </div>
-            </label>
-          </div>
 
-          <div className="actions">
-            <button className="btn btn--primary" onClick={() => requestAuth('start')} disabled={isBusy}>
-              Start
-            </button>
-            <button className="btn btn--ghost" onClick={() => requestAuth('stop')} disabled={isBusy}>
-              Stop
-            </button>
-            <button className="btn btn--ghost" onClick={() => void refreshStatus()} disabled={isBusy}>
-              Refresh
-            </button>
-          </div>
-        </section>
+              <div className="form-grid">
+                <label className="field">
+                  <span>Left Port</span>
+                  <input
+                    value={p.leftPath}
+                    onChange={(event) => updatePair(p.id, { leftPath: event.target.value })}
+                    placeholder="/dev/ttyV0"
+                    disabled={isRunning}
+                  />
+                </label>
+                <label className="field">
+                  <span>Right Port</span>
+                  <input
+                    value={p.rightPath}
+                    onChange={(event) => updatePair(p.id, { rightPath: event.target.value })}
+                    placeholder="/dev/ttyV1"
+                    disabled={isRunning}
+                  />
+                </label>
+                <label className="field">
+                  <span>Mode (octal)</span>
+                  <input
+                    value={p.mode}
+                    onChange={(event) => updatePair(p.id, { mode: event.target.value })}
+                    placeholder="0666"
+                    disabled={isRunning}
+                  />
+                </label>
+                <label className="field">
+                  <span>Extra socat options</span>
+                  <input
+                    value={p.extraOptions}
+                    onChange={(event) => updatePair(p.id, { extraOptions: event.target.value })}
+                    placeholder="waitslave,unlink-close"
+                    disabled={isRunning}
+                  />
+                </label>
+              </div>
+              
+              {st?.message && !isRunning && (
+                <div className="status-message" style={{ marginTop: '0.5rem' }}>
+                  {st.message}
+                </div>
+              )}
+              {st?.details && !isRunning && (
+                <div className="status-logs" style={{ marginTop: '0.5rem' }}>
+                  <pre>{st.details}</pre>
+                </div>
+              )}
 
-        <section className="card card--dark">
-          <h2>Status</h2>
-          <div className="status-grid">
-            <div>
-              <p className="status-label">State</p>
-              <p className="status-value">{statusLabel}</p>
-            </div>
-            <div>
-              <p className="status-label">PID</p>
-              <p className="status-value">{status?.pid ?? '—'}</p>
-            </div>
-            <div>
-              <p className="status-label">Log</p>
-              <p className="status-value mono">{status?.logPath ?? '/run/virtual-port-linux.log'}</p>
-            </div>
-          </div>
-          <div className="status-message">
-            {status?.message ? status.message : 'Start to create the virtual port pair.'}
-          </div>
-          {authHint ? <div className="status-hint">{authHint}</div> : null}
-          {status?.details ? (
-            <div className="status-logs">
-              <p className="status-label">Details</p>
-              <pre>{status.details}</pre>
-            </div>
-          ) : null}
-        </section>
+              {/* Show rolling terminal logs if running or if we have log data */}
+              {(isRunning || logs[p.id]) && (
+                <div className="status-logs" style={{ marginTop: '1rem', backgroundColor: '#1a1a1a', borderRadius: '4px', overflow: 'hidden' }}>
+                   <div style={{ background: '#333', padding: '4px 8px', fontSize: '0.75rem', color: '#ccc', fontFamily: 'monospace' }}>
+                     {st?.logPath || `/run/virtual-port-linux-${p.id}.log`}
+                   </div>
+                   <pre style={{ 
+                     maxHeight: '150px', 
+                     overflowY: 'auto', 
+                     padding: '8px', 
+                     margin: 0, 
+                     color: '#f8f8f2' 
+                   }}>
+                     {logs[p.id] || 'Waiting for output...'}
+                   </pre>
+                </div>
+              )}
+            </section>
+          )
+        })}
+
+        <div className="actions" style={{ justifyContent: 'center' }}>
+          <button className="btn btn--primary" onClick={handleAddPair}>
+            + Add New Pair
+          </button>
+          <button className="btn btn--ghost" onClick={refreshStatusAll}>
+            ↻ Refresh All
+          </button>
+        </div>
       </main>
 
       {authAction ? (
         <div className="modal-backdrop">
           <div className="modal">
             <h3>Authentication Required</h3>
-            <p>Enter your sudo password to {authAction} the virtual ports.</p>
+            <p>Enter your sudo password to {authAction.action} pair {authAction.id}.</p>
             <input
               type="password"
               value={password}

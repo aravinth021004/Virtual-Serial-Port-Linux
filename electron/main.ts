@@ -28,6 +28,7 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 
 let win: BrowserWindow | null
 
 type PortConfig = {
+  id: string
   leftPath: string
   rightPath: string
   mode: string
@@ -53,7 +54,7 @@ type HelperResult = {
   stderr: string
 }
 
-const LOG_PATH = '/run/virtual-port-linux.log'
+const getLogPath = (id: string) => `/run/virtual-port-linux-${id}.log`
 
 function resolveHelperPath() {
   const root = process.env.APP_ROOT ?? app.getAppPath()
@@ -135,6 +136,9 @@ function validateConfig(config: PortConfig): string | null {
   const modeRegex = /^[0-7]{3,4}$/
   const extraRegex = /^[A-Za-z0-9_=,.-]*$/
 
+  if (!config.id || !/^[A-Za-z0-9-]+$/.test(config.id)) {
+    return 'Invalid pair ID.'
+  }
   if (!deviceRegex.test(config.leftPath)) {
     return 'Left port path must be a /dev/tty* device name.'
   }
@@ -281,8 +285,8 @@ function runHelperWithSudo(args: string[], password: string): Promise<HelperResu
   })
 }
 
-async function readStatus(): Promise<PortStatus> {
-  const result = await runHelper(['status'], false)
+async function readStatus(id: string): Promise<PortStatus> {
+  const result = await runHelper(['status', id], false)
   const output = result.stdout.trim()
 
   if (result.exitCode !== 0 && !output) {
@@ -298,7 +302,7 @@ async function readStatus(): Promise<PortStatus> {
     return {
       state: 'running',
       pid: Number.isFinite(pidValue) ? pidValue : undefined,
-      logPath: LOG_PATH,
+      logPath: getLogPath(id),
       details: [result.stdout, result.stderr].filter(Boolean).join('\n').trim() || undefined,
     }
   }
@@ -306,7 +310,7 @@ async function readStatus(): Promise<PortStatus> {
   if (output === 'stopped') {
     return {
       state: 'stopped',
-      logPath: LOG_PATH,
+      logPath: getLogPath(id),
       details: [result.stdout, result.stderr].filter(Boolean).join('\n').trim() || undefined,
     }
   }
@@ -314,32 +318,32 @@ async function readStatus(): Promise<PortStatus> {
   return {
     state: 'error',
     message: output || result.stderr.trim() || 'Unknown status.',
-    logPath: LOG_PATH,
+    logPath: getLogPath(id),
     details: [result.stdout, result.stderr].filter(Boolean).join('\n').trim() || undefined,
   }
 }
 
 function registerIpcHandlers() {
-  ipcMain.handle('virtual-port:status', async () => readStatus())
+  ipcMain.handle('virtual-port:status', async (_event, id: string) => readStatus(id))
 
   ipcMain.handle('virtual-port:start', async (_event, payload: { config: PortConfig; auth: AuthConfig }) => {
     const { config, auth } = payload
     const error = validateConfig(config)
     if (error) {
-      return { state: 'error', message: error, logPath: LOG_PATH }
+      return { state: 'error', message: error, logPath: getLogPath(config.id) }
     }
 
     if (auth.useSudo && !auth.password) {
-      return { state: 'error', message: 'Password is required for sudo.', logPath: LOG_PATH }
+      return { state: 'error', message: 'Password is required for sudo.', logPath: getLogPath(config.id) }
     }
 
     const extra = config.extraOptions ? `,${config.extraOptions}` : '-'
     const result = auth.useSudo
       ? await runHelperWithSudo(
-          ['start', config.leftPath, config.rightPath, config.mode, extra],
+          ['start', config.id, config.leftPath, config.rightPath, config.mode, extra],
           auth.password ?? '',
         )
-      : await runHelper(['start', config.leftPath, config.rightPath, config.mode, extra])
+      : await runHelper(['start', config.id, config.leftPath, config.rightPath, config.mode, extra])
 
     if (result.exitCode !== 0) {
       const combined = [result.stdout, result.stderr].filter(Boolean).join('\n').trim()
@@ -350,22 +354,23 @@ function registerIpcHandlers() {
       return {
         state: 'error',
         message,
-        logPath: LOG_PATH,
+        logPath: getLogPath(config.id),
         details: combined || undefined,
       }
     }
 
-    return readStatus()
+    return readStatus(config.id)
   })
 
-  ipcMain.handle('virtual-port:stop', async (_event, auth: AuthConfig) => {
+  ipcMain.handle('virtual-port:stop', async (_event, payload: { id: string; auth: AuthConfig }) => {
+    const { id, auth } = payload
     if (auth.useSudo && !auth.password) {
-      return { state: 'error', message: 'Password is required for sudo.', logPath: LOG_PATH }
+      return { state: 'error', message: 'Password is required for sudo.', logPath: getLogPath(id) }
     }
 
     const result = auth.useSudo
-      ? await runHelperWithSudo(['stop'], auth.password ?? '')
-      : await runHelper(['stop'])
+      ? await runHelperWithSudo(['stop', id], auth.password ?? '')
+      : await runHelper(['stop', id])
 
     if (result.exitCode !== 0) {
       const combined = [result.stdout, result.stderr].filter(Boolean).join('\n').trim()
@@ -376,12 +381,24 @@ function registerIpcHandlers() {
       return {
         state: 'error',
         message,
-        logPath: LOG_PATH,
+        logPath: getLogPath(id),
         details: combined || undefined,
       }
     }
 
-    return readStatus()
+    return readStatus(id)
+  })
+
+  ipcMain.handle('virtual-port:read-log', async (_event, id: string) => {
+    try {
+      const logFile = getLogPath(id)
+      if (fs.existsSync(logFile)) {
+        return fs.readFileSync(logFile, 'utf8')
+      }
+      return ''
+    } catch (e) {
+      return `Failed to read log: ${e instanceof Error ? e.message : e}`
+    }
   })
 }
 

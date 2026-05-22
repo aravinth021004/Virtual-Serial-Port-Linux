@@ -9,6 +9,7 @@ type VirtualPortStatus = {
 }
 
 type VirtualPortConfig = {
+	id: string
 	leftPath: string
 	rightPath: string
 	mode: string
@@ -23,7 +24,8 @@ type VirtualPortAuth = {
 interface Window {
 	virtualPort: {
 		start(config: VirtualPortConfig, auth: VirtualPortAuth): Promise<VirtualPortStatus>
-		stop(auth: VirtualPortAuth): Promise<VirtualPortStatus>
-		status(): Promise<VirtualPortStatus>
+		stop(id: string, auth: VirtualPortAuth): Promise<VirtualPortStatus>
+		status(id: string): Promise<VirtualPortStatus>
+		readLog(id: string): Promise<string>
 	}
 }
