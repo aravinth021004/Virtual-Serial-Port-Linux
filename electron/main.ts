@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu } from 'electron'
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -408,7 +408,9 @@ function createWindow() {
     width: 980,
     height: 680,
     backgroundColor: '#f3efe6',
+    autoHideMenuBar: true,
     webPreferences: {
+      devTools: false,
       preload: path.join(__dirname, 'preload.mjs'),
       contextIsolation: true,
       nodeIntegration: false,
@@ -421,6 +423,8 @@ function createWindow() {
     // win.loadFile('dist/index.html')
     win.loadFile(path.join(RENDERER_DIST, 'index.html'))
   }
+  
+  win.setMenu(null)
 }
 
 // Quit when all windows are closed, except on macOS. There, it's common
@@ -443,5 +447,6 @@ app.on('activate', () => {
 
 app.whenReady().then(() => {
   registerIpcHandlers()
+  Menu.setApplicationMenu(null)
   createWindow()
 })

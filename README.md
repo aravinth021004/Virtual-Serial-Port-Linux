@@ -1,11 +1,11 @@
 # Virtual Port Studio
 
-Electron + React + TypeScript app to create and manage a paired virtual serial port using `socat`.
+Electron + React + TypeScript app to dynamically create and manage multiple paired virtual serial ports using `socat`.
 
 ## Prerequisites
 
 - Linux with `socat` installed
-- `pkexec` (polkit) available for privilege elevation
+- `sudo` available for privilege elevation (to create `/dev/tty*` symlinks)
 
 ## Development
 
@@ -24,12 +24,13 @@ Artifacts are generated under `release/<version>/`.
 
 ## How it Works
 
-- Renderer UI collects port configuration.
-- Main process invokes the helper script with `pkexec` to run `socat` as root.
-- The helper writes a PID file to `/run/virtual-port-linux.pid` and logs to `/run/virtual-port-linux.log`.
+- Renderer UI manages multiple port configurations and displays isolated, rolling terminal logs per pair.
+- Main process invokes a background helper script, securely routing privilege elevation via an in-app `sudo -S` password prompt to run `socat` as root.
+- The helper writes unique PID and log files for each pair (e.g., `/run/virtual-port-linux-${ID}.pid` and `/run/virtual-port-linux-${ID}.log`).
+- Polling reliably checks the processor states using `/proc/$pid` without constantly requiring root authentication.
 
 ## Notes
 
-- You will be prompted for your password when starting/stopping the ports.
-- Default device names are `/dev/ttyV0` and `/dev/ttyV1`.
+- You will be prompted securely for a sudo password in-app when starting/stopping ports mapped strictly to `/dev`.
+- Device pairs iterate dynamically (e.g. `/dev/ttyV0` + `/dev/ttyV1`, `/dev/ttyV2` + `/dev/ttyV3`).
 - Extra options are appended to both `socat` pty endpoints and must be comma-separated.
