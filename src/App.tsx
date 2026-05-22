@@ -19,6 +19,9 @@ function App() {
   const [form, setForm] = useState<FormState>(DEFAULT_FORM)
   const [status, setStatus] = useState<VirtualPortStatus | null>(null)
   const [isBusy, setIsBusy] = useState(false)
+  const [useSudo, setUseSudo] = useState(true)
+  const [password, setPassword] = useState('')
+  const [authAction, setAuthAction] = useState<'start' | 'stop' | null>(null)
 
   useEffect(() => {
     const saved = localStorage.getItem('virtual-port-config')
@@ -46,6 +49,18 @@ function App() {
     return 'Error'
   }, [status])
 
+  const authHint = useMemo(() => {
+    const text = `${status?.message ?? ''}\n${status?.details ?? ''}`
+    if (
+      text.includes('No session for cookie') ||
+      text.includes('pam_authenticate failed') ||
+      text.includes('Not authorized')
+    ) {
+      return 'Polkit agent not available. In WSL, start a user dbus session and run a polkit agent before using Start.'
+    }
+    return ''
+  }, [status])
+
   async function refreshStatus() {
     setIsBusy(true)
     try {
@@ -56,24 +71,38 @@ function App() {
     }
   }
 
-  async function handleStart() {
+  async function runAction(action: 'start' | 'stop', authPassword: string) {
     setIsBusy(true)
     try {
-      const nextStatus = await window.virtualPort.start(form)
+      const auth = { useSudo, password: authPassword }
+      const nextStatus =
+        action === 'start'
+          ? await window.virtualPort.start(form, auth)
+          : await window.virtualPort.stop(auth)
       setStatus(nextStatus)
     } finally {
+      setPassword('')
       setIsBusy(false)
     }
   }
 
-  async function handleStop() {
-    setIsBusy(true)
-    try {
-      const nextStatus = await window.virtualPort.stop()
-      setStatus(nextStatus)
-    } finally {
-      setIsBusy(false)
+  function requestAuth(action: 'start' | 'stop') {
+    if (useSudo) {
+      setAuthAction(action)
+      return
     }
+    void runAction(action, '')
+  }
+
+  function handleAuthConfirm() {
+    if (!authAction) return
+    void runAction(authAction, password)
+    setAuthAction(null)
+  }
+
+  function handleAuthCancel() {
+    setAuthAction(null)
+    setPassword('')
   }
 
   return (
@@ -129,13 +158,24 @@ function App() {
                 placeholder="waitslave,unlink-close"
               />
             </label>
+            <label className="field">
+              <span>Use sudo (in-app password)</span>
+              <div className="toggle-row">
+                <input
+                  type="checkbox"
+                  checked={useSudo}
+                  onChange={(event) => setUseSudo(event.target.checked)}
+                />
+                <span className="toggle-label">Required in WSL AppImage</span>
+              </div>
+            </label>
           </div>
 
           <div className="actions">
-            <button className="btn btn--primary" onClick={() => void handleStart()} disabled={isBusy}>
+            <button className="btn btn--primary" onClick={() => requestAuth('start')} disabled={isBusy}>
               Start
             </button>
-            <button className="btn btn--ghost" onClick={() => void handleStop()} disabled={isBusy}>
+            <button className="btn btn--ghost" onClick={() => requestAuth('stop')} disabled={isBusy}>
               Stop
             </button>
             <button className="btn btn--ghost" onClick={() => void refreshStatus()} disabled={isBusy}>
@@ -163,8 +203,44 @@ function App() {
           <div className="status-message">
             {status?.message ? status.message : 'Start to create the virtual port pair.'}
           </div>
+          {authHint ? <div className="status-hint">{authHint}</div> : null}
+          {status?.details ? (
+            <div className="status-logs">
+              <p className="status-label">Details</p>
+              <pre>{status.details}</pre>
+            </div>
+          ) : null}
         </section>
       </main>
+
+      {authAction ? (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <h3>Authentication Required</h3>
+            <p>Enter your sudo password to {authAction} the virtual ports.</p>
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && password) {
+                  handleAuthConfirm()
+                }
+              }}
+              placeholder="Sudo password"
+              autoFocus
+            />
+            <div className="modal-actions">
+              <button className="btn btn--ghost" onClick={handleAuthCancel}>
+                Cancel
+              </button>
+              <button className="btn btn--primary" onClick={handleAuthConfirm} disabled={!password}>
+                Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

@@ -1,11 +1,14 @@
 import { ipcRenderer, contextBridge } from 'electron'
 
 contextBridge.exposeInMainWorld('virtualPort', {
-  start(config: { leftPath: string; rightPath: string; mode: string; extraOptions: string }) {
-    return ipcRenderer.invoke('virtual-port:start', config)
+  start(
+    config: { leftPath: string; rightPath: string; mode: string; extraOptions: string },
+    auth: { useSudo: boolean; password?: string },
+  ) {
+    return ipcRenderer.invoke('virtual-port:start', { config, auth })
   },
-  stop() {
-    return ipcRenderer.invoke('virtual-port:stop')
+  stop(auth: { useSudo: boolean; password?: string }) {
+    return ipcRenderer.invoke('virtual-port:stop', auth)
   },
   status() {
     return ipcRenderer.invoke('virtual-port:status')

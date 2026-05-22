@@ -5,6 +5,7 @@ type VirtualPortStatus = {
 	pid?: number
 	message?: string
 	logPath?: string
+	details?: string
 }
 
 type VirtualPortConfig = {
@@ -14,10 +15,15 @@ type VirtualPortConfig = {
 	extraOptions: string
 }
 
+type VirtualPortAuth = {
+	useSudo: boolean
+	password?: string
+}
+
 interface Window {
 	virtualPort: {
-		start(config: VirtualPortConfig): Promise<VirtualPortStatus>
-		stop(): Promise<VirtualPortStatus>
+		start(config: VirtualPortConfig, auth: VirtualPortAuth): Promise<VirtualPortStatus>
+		stop(auth: VirtualPortAuth): Promise<VirtualPortStatus>
 		status(): Promise<VirtualPortStatus>
 	}
 }

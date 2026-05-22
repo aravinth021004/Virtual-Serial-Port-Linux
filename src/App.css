@@ -85,6 +85,18 @@
   border-color: rgba(88, 166, 156, 0.9);
 }
 
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.2rem 0;
+}
+
+.toggle-label {
+  font-size: 0.85rem;
+  color: #5f574d;
+}
+
 .actions {
   display: flex;
   gap: 1rem;
@@ -196,6 +208,74 @@
   background: rgba(246, 241, 231, 0.08);
   border-radius: 12px;
   font-size: 0.95rem;
+}
+
+.status-hint {
+  margin-top: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-radius: 12px;
+  background: rgba(88, 166, 156, 0.18);
+  color: #f6f1e7;
+  font-size: 0.88rem;
+}
+
+.status-logs {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  border-radius: 12px;
+  background: rgba(246, 241, 231, 0.05);
+  border: 1px solid rgba(246, 241, 231, 0.12);
+}
+
+.status-logs pre {
+  margin: 0.5rem 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: 'IBM Plex Mono', 'Fira Code', monospace;
+  font-size: 0.78rem;
+  color: rgba(246, 241, 231, 0.8);
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 12, 10, 0.6);
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  z-index: 10;
+}
+
+.modal {
+  width: min(420px, 100%);
+  background: #f6f1e7;
+  border-radius: 18px;
+  padding: 1.5rem;
+  box-shadow: 0 30px 60px rgba(16, 12, 10, 0.35);
+}
+
+.modal h3 {
+  margin: 0 0 0.75rem;
+  font-size: 1.25rem;
+}
+
+.modal p {
+  margin: 0 0 1rem;
+  color: #4c4339;
+}
+
+.modal input {
+  width: 100%;
+  padding: 0.75rem 0.85rem;
+  border-radius: 12px;
+  border: 1px solid rgba(95, 87, 77, 0.4);
+  margin-bottom: 1.25rem;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
 }
 
 @media (max-width: 900px) {

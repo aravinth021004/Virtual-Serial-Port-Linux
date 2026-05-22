@@ -9,8 +9,13 @@
   },
   "files": [
     "dist",
-    "dist-electron",
-    "resources"
+    "dist-electron"
+  ],
+  "extraResources": [
+    {
+      "from": "resources/virtual-port-helper.sh",
+      "to": "virtual-port-helper.sh"
+    }
   ],
   "mac": {
     "target": [

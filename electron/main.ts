@@ -1,5 +1,7 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { spawn } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
@@ -37,6 +39,12 @@ type PortStatus = {
   pid?: number
   message?: string
   logPath?: string
+  details?: string
+}
+
+type AuthConfig = {
+  useSudo: boolean
+  password?: string
 }
 
 type HelperResult = {
@@ -47,12 +55,79 @@ type HelperResult = {
 
 const LOG_PATH = '/run/virtual-port-linux.log'
 
-function getHelperPath() {
+function resolveHelperPath() {
   const root = process.env.APP_ROOT ?? app.getAppPath()
-  if (app.isPackaged) {
-    return path.join(process.resourcesPath, 'resources', 'virtual-port-helper.sh')
+  const candidates = app.isPackaged
+    ? [
+        path.join(process.resourcesPath, 'virtual-port-helper.sh'),
+        path.join(process.resourcesPath, 'resources', 'virtual-port-helper.sh'),
+      ]
+    : [
+        path.join(root, 'resources', 'virtual-port-helper.sh'),
+        path.join(process.cwd(), 'resources', 'virtual-port-helper.sh'),
+      ]
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate
+    }
   }
-  return path.join(root, 'resources', 'virtual-port-helper.sh')
+
+  return candidates[0]
+}
+
+// function ensureExecutable(helperPath: string): string {
+//   try {
+//     fs.accessSync(helperPath, fs.constants.X_OK)
+//     return helperPath
+//   } catch {
+//     const tempPath = path.join(os.tmpdir(), 'virtual-port-helper.sh')
+//     try {
+//       fs.copyFileSync(helperPath, tempPath)
+//       fs.chmodSync(tempPath, 0o755)
+//       return tempPath
+//     } catch {
+//       return helperPath
+//     }
+//   }
+// }
+
+function resolvePkexecPath() {
+  const candidates = ['/usr/bin/pkexec', '/bin/pkexec']
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate
+    }
+  }
+
+  const pathEntries = (process.env.PATH ?? '').split(path.delimiter)
+  for (const entry of pathEntries) {
+    const candidate = path.join(entry, 'pkexec')
+    if (fs.existsSync(candidate)) {
+      return candidate
+    }
+  }
+
+  return null
+}
+
+function resolveSudoPath() {
+  const candidates = ['/usr/bin/sudo', '/bin/sudo']
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate
+    }
+  }
+
+  const pathEntries = (process.env.PATH ?? '').split(path.delimiter)
+  for (const entry of pathEntries) {
+    const candidate = path.join(entry, 'sudo')
+    if (fs.existsSync(candidate)) {
+      return candidate
+    }
+  }
+
+  return null
 }
 
 function validateConfig(config: PortConfig): string | null {
@@ -76,11 +151,59 @@ function validateConfig(config: PortConfig): string | null {
   return null
 }
 
+function stageHelper(helperPath: string): { path: string; error?: string } {
+  const isPackaged = app.isPackaged
+  try {
+    if (!isPackaged) {
+      fs.accessSync(helperPath, fs.constants.X_OK)
+      return { path: helperPath }
+    }
+  } catch {
+    // Continue to staged copy for AppImage/noexec mounts.
+  }
+
+  const tempPath = path.join(os.tmpdir(), `virtual-port-helper-${process.pid}.sh`)
+  try {
+    fs.copyFileSync(helperPath, tempPath)
+    fs.chmodSync(tempPath, 0o755)
+    return { path: tempPath }
+  } catch (error) {
+    return { path: helperPath, error: error instanceof Error ? error.message : 'Unable to stage helper.' }
+  }
+}
+
 function runHelper(args: string[], usePkexec = true): Promise<HelperResult> {
   return new Promise((resolve) => {
-    const helperPath = getHelperPath()
-    const command = usePkexec ? 'pkexec' : helperPath
-    const commandArgs = usePkexec ? [helperPath, ...args] : args
+    const helperPath = resolveHelperPath()
+    if (!fs.existsSync(helperPath)) {
+      resolve({
+        exitCode: 1,
+        stdout: '',
+        stderr: `Helper not found at ${helperPath}.`,
+      })
+      return
+    }
+    const staged = stageHelper(helperPath)
+    if (staged.error) {
+      resolve({ exitCode: 1, stdout: '', stderr: `Error staging helper: ${staged.error}` })
+      return
+    }
+    const executableHelper = staged.path
+    const isRoot = typeof process.getuid === 'function' && process.getuid() === 0
+    const pkexecPath = usePkexec ? resolvePkexecPath() : null
+
+    if (usePkexec && !pkexecPath && !isRoot) {
+      resolve({
+        exitCode: 1,
+        stdout: '',
+        stderr: 'pkexec is not available. Install policykit or run the app as root.',
+      })
+      return
+    }
+
+    const shouldUsePkexec = usePkexec && !isRoot
+    const command = shouldUsePkexec ? pkexecPath ?? 'pkexec' : executableHelper
+    const commandArgs = shouldUsePkexec ? [executableHelper, ...args] : args
     const proc = spawn(command, commandArgs, {
       env: {
         ...process.env,
@@ -107,57 +230,154 @@ function runHelper(args: string[], usePkexec = true): Promise<HelperResult> {
   })
 }
 
+function runHelperWithSudo(args: string[], password: string): Promise<HelperResult> {
+  return new Promise((resolve) => {
+    const helperPath = resolveHelperPath()
+    if (!fs.existsSync(helperPath)) {
+      resolve({
+        exitCode: 1,
+        stdout: '',
+        stderr: `Helper not found at ${helperPath}.`,
+      })
+      return
+    }
+    const staged = stageHelper(helperPath)
+    if (staged.error) {
+      resolve({ exitCode: 1, stdout: '', stderr: `Error staging helper: ${staged.error}` })
+      return
+    }
+    const sudoPath = resolveSudoPath()
+    if (!sudoPath) {
+      resolve({ exitCode: 1, stdout: '', stderr: 'sudo is not available on this system.' })
+      return
+    }
+
+    const proc = spawn(sudoPath, ['-S', staged.path, ...args], {
+      env: {
+        ...process.env,
+      },
+    })
+
+    let stdout = ''
+    let stderr = ''
+
+    proc.stdout.on('data', (data) => {
+      stdout += data.toString()
+    })
+    proc.stderr.on('data', (data) => {
+      stderr += data.toString()
+    })
+
+    proc.on('error', (error) => {
+      resolve({ exitCode: 1, stdout, stderr: `${stderr}${error.message}` })
+    })
+
+    proc.on('close', (exitCode) => {
+      resolve({ exitCode, stdout, stderr })
+    })
+
+    proc.stdin.write(`${password}\n`)
+    proc.stdin.end()
+  })
+}
+
 async function readStatus(): Promise<PortStatus> {
   const result = await runHelper(['status'], false)
   const output = result.stdout.trim()
 
   if (result.exitCode !== 0 && !output) {
-    return { state: 'error', message: result.stderr.trim() || 'Failed to read status.' }
+    return {
+      state: 'error',
+      message: result.stderr.trim() || 'Failed to read status.',
+      details: [result.stdout, result.stderr].filter(Boolean).join('\n').trim() || undefined,
+    }
   }
 
   if (output.startsWith('running:')) {
     const pidValue = Number(output.replace('running:', '').trim())
-    return { state: 'running', pid: Number.isFinite(pidValue) ? pidValue : undefined, logPath: LOG_PATH }
+    return {
+      state: 'running',
+      pid: Number.isFinite(pidValue) ? pidValue : undefined,
+      logPath: LOG_PATH,
+      details: [result.stdout, result.stderr].filter(Boolean).join('\n').trim() || undefined,
+    }
   }
 
   if (output === 'stopped') {
-    return { state: 'stopped', logPath: LOG_PATH }
+    return {
+      state: 'stopped',
+      logPath: LOG_PATH,
+      details: [result.stdout, result.stderr].filter(Boolean).join('\n').trim() || undefined,
+    }
   }
 
-  return { state: 'error', message: output || result.stderr.trim() || 'Unknown status.', logPath: LOG_PATH }
+  return {
+    state: 'error',
+    message: output || result.stderr.trim() || 'Unknown status.',
+    logPath: LOG_PATH,
+    details: [result.stdout, result.stderr].filter(Boolean).join('\n').trim() || undefined,
+  }
 }
 
 function registerIpcHandlers() {
   ipcMain.handle('virtual-port:status', async () => readStatus())
 
-  ipcMain.handle('virtual-port:start', async (_event, config: PortConfig) => {
+  ipcMain.handle('virtual-port:start', async (_event, payload: { config: PortConfig; auth: AuthConfig }) => {
+    const { config, auth } = payload
     const error = validateConfig(config)
     if (error) {
       return { state: 'error', message: error, logPath: LOG_PATH }
     }
 
+    if (auth.useSudo && !auth.password) {
+      return { state: 'error', message: 'Password is required for sudo.', logPath: LOG_PATH }
+    }
+
     const extra = config.extraOptions ? `,${config.extraOptions}` : '-'
-    const result = await runHelper(['start', config.leftPath, config.rightPath, config.mode, extra])
+    const result = auth.useSudo
+      ? await runHelperWithSudo(
+          ['start', config.leftPath, config.rightPath, config.mode, extra],
+          auth.password ?? '',
+        )
+      : await runHelper(['start', config.leftPath, config.rightPath, config.mode, extra])
 
     if (result.exitCode !== 0) {
+      const combined = [result.stdout, result.stderr].filter(Boolean).join('\n').trim()
+      const authFailed = combined.includes('AUTHENTICATION FAILED') || combined.includes('incorrect password')
+      const message = authFailed
+        ? 'Authentication failed. Please verify your password.'
+        : result.stdout.trim() || result.stderr.trim() || 'Failed to start socat.'
       return {
         state: 'error',
-        message: result.stdout.trim() || result.stderr.trim() || 'Failed to start socat.',
+        message,
         logPath: LOG_PATH,
+        details: combined || undefined,
       }
     }
 
     return readStatus()
   })
 
-  ipcMain.handle('virtual-port:stop', async () => {
-    const result = await runHelper(['stop'])
+  ipcMain.handle('virtual-port:stop', async (_event, auth: AuthConfig) => {
+    if (auth.useSudo && !auth.password) {
+      return { state: 'error', message: 'Password is required for sudo.', logPath: LOG_PATH }
+    }
+
+    const result = auth.useSudo
+      ? await runHelperWithSudo(['stop'], auth.password ?? '')
+      : await runHelper(['stop'])
 
     if (result.exitCode !== 0) {
+      const combined = [result.stdout, result.stderr].filter(Boolean).join('\n').trim()
+      const authFailed = combined.includes('AUTHENTICATION FAILED') || combined.includes('incorrect password')
+      const message = authFailed
+        ? 'Authentication failed. Please verify your password.'
+        : result.stdout.trim() || result.stderr.trim() || 'Failed to stop socat.'
       return {
         state: 'error',
-        message: result.stdout.trim() || result.stderr.trim() || 'Failed to stop socat.',
+        message,
         logPath: LOG_PATH,
+        details: combined || undefined,
       }
     }
 
