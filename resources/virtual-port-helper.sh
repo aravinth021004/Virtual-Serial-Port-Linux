@@ -21,9 +21,12 @@ is_running() {
   if [[ -f "$PID_FILE" ]]; then
     local pid
     pid="$(cat "$PID_FILE" 2>/dev/null || true)"
-    if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
-      echo "$pid"
-      return 0
+    if [[ -n "$pid" ]]; then
+      # kill -0 without sudo returns permission denied for root processes
+      if [[ -d "/proc/$pid" ]] || ps -p "$pid" >/dev/null 2>&1; then
+        echo "$pid"
+        return 0
+      fi
     fi
   fi
   return 1
